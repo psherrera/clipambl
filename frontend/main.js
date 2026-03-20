@@ -274,7 +274,9 @@ document.addEventListener('DOMContentLoaded', () => {
             // Populate Video Info
             if (data.thumbnail) {
                 let thumbUrl = data.thumbnail;
-                if (thumbUrl.startsWith('/')) {
+                if (thumbUrl.startsWith('/api/')) {
+                    thumbUrl = window.location.origin + thumbUrl;
+                } else if (thumbUrl.startsWith('/')) {
                     thumbUrl = `${API_BASE}${thumbUrl}`;
                 }
                 thumbnailImg.src = thumbUrl;

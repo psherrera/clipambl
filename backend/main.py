@@ -246,11 +246,12 @@ async def get_video_info(req: VideoRequest, request: Request):
             'label': 'Mejor calidad (.mp4)'
         })
 
-    # Proxy para Instagram thumbnails (Usamos ruta relativa para que el frontend la complete)
+    # Proxy para Instagram thumbnails
     thumbnail = info.get('thumbnail')
     if 'instagram.com' in url and thumbnail:
-        thumbnail = f"/proxy-thumbnail?url={thumbnail}"
-        print(f"DEBUG: Instagram Thumbnail proxied (relative): {thumbnail}")
+        from urllib.parse import quote
+        thumbnail = f"/api/proxy-thumbnail?url={quote(thumbnail, safe='')}"
+        print(f"DEBUG: Instagram Thumbnail proxied: {thumbnail}")
 
     return {
         'title': info.get('title'),
