@@ -32,6 +32,11 @@ try:
 except ImportError:
     AudioSegment = None
 
+try:
+    import instaloader
+except ImportError:
+    instaloader = None
+
 # --- CONFIGURACIÓN DE ENTORNO ---
 IS_RENDER = os.environ.get('RENDER') is not None
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
@@ -197,13 +202,96 @@ def get_robust_opts(target_url, extra={}):
 
     return opts
 
+# --- INSTAGRAM CON INSTALOADER ---
+
+def get_instagram_info(url):
+    """Extrae info de un Reel/Video de Instagram usando instaloader."""
+    if not instaloader:
+        raise Exception("instaloader no está instalado")
+
+    ig_user = os.environ.get('IG_USER', '')
+    ig_pass = os.environ.get('IG_PASS', '')
+
+    L = instaloader.Instaloader(
+        download_videos=True,
+        download_video_thumbnails=True,
+        download_geotags=False,
+        download_comments=False,
+        save_metadata=False,
+        compress_json=False,
+        quiet=True,
+    )
+
+    if ig_user and ig_pass:
+        try:
+            L.login(ig_user, ig_pass)
+            print(f"DEBUG: Instaloader login OK como {ig_user}")
+        except Exception as e:
+            print(f"DEBUG: Instaloader login falló: {e}")
+
+    match = re.search(r'/(reel|p|tv)/([A-Za-z0-9_-]+)', url)
+    if not match:
+        raise Exception("No se pudo extraer el shortcode del URL de Instagram")
+
+    shortcode = match.group(2)
+    print(f"DEBUG: Instaloader extrayendo shortcode: {shortcode}")
+
+    post = instaloader.Post.from_shortcode(L.context, shortcode)
+
+    title = post.caption[:100] if post.caption else f"Instagram Reel {shortcode}"
+
+    try:
+        thumbnail = post.url
+    except:
+        thumbnail = None
+
+    return {
+        'shortcode': shortcode,
+        'title': title,
+        'thumbnail': thumbnail,
+        'duration': int(post.video_duration) if post.is_video and post.video_duration else None,
+        'uploader': post.owner_username,
+        'is_video': post.is_video,
+        'video_url': post.video_url if post.is_video else None,
+    }
+
 # --- ENDPOINTS ---
 
 @app.post("/api/video-info")
 async def get_video_info(req: VideoRequest, request: Request):
     url = req.url
+    is_instagram = 'instagram.com' in url
+
+    # --- INSTAGRAM: usar instaloader ---
+    if is_instagram and instaloader:
+        try:
+            ig_info = await asyncio.to_thread(get_instagram_info, url)
+            if ig_info['is_video']:
+                formats = [{'format_id': 'best', 'ext': 'mp4', 'resolution': 'Mejor calidad', 'filesize': None, 'label': 'Mejor calidad (.mp4)'}]
+            else:
+                formats = [{'format_id': 'best', 'ext': 'jpg', 'resolution': 'Imagen original', 'filesize': None, 'label': 'Imagen original (.jpg)'}]
+
+            thumbnail = ig_info.get('thumbnail')
+            if thumbnail:
+                from urllib.parse import quote
+                thumbnail = f"/api/proxy-thumbnail?url={quote(thumbnail, safe='')}"
+
+            return {
+                'title': ig_info['title'],
+                'thumbnail': thumbnail,
+                'max_res_thumbnail': thumbnail,
+                'duration': ig_info.get('duration'),
+                'uploader': ig_info.get('uploader', 'Instagram'),
+                'description': ig_info['title'],
+                'formats': formats,
+                'has_ffmpeg': True,
+                'has_subtitles': False,
+            }
+        except Exception as e:
+            print(f"DEBUG: Instaloader falló, intentando con yt-dlp: {e}")
+
     is_youtube = 'youtube.com' in url or 'youtu.be' in url
-    
+
     info = None
     last_error = ""
     
@@ -426,6 +514,38 @@ async def download_video(req: VideoRequest, background_tasks: BackgroundTasks):
     url = req.url
     format_id = req.format_id
     uid = str(uuid.uuid4())
+
+    # --- INSTAGRAM: usar instaloader para descarga ---
+    if 'instagram.com' in url and instaloader:
+        try:
+            ig_info = await asyncio.to_thread(get_instagram_info, url)
+            if not ig_info['is_video']:
+                raise HTTPException(status_code=400, detail="Este post de Instagram no tiene video.")
+
+            video_url = ig_info['video_url']
+            headers = {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3_1 like Mac OS X) AppleWebKit/605.1.15'}
+            r = requests.get(video_url, headers=headers, stream=True, timeout=60)
+            r.raise_for_status()
+
+            file_path = os.path.join(DOWNLOAD_FOLDER, f'instagram_{uid}.mp4')
+            with open(file_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            def remove_file(path):
+                try:
+                    if os.path.exists(path): os.remove(path)
+                except: pass
+
+            background_tasks.add_task(remove_file, file_path)
+            filename = f"{ig_info['title'][:30].strip()}_{uid}.mp4"
+            return FileResponse(file_path, filename=filename, media_type='video/mp4')
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"DEBUG: Instaloader download falló, intentando con yt-dlp: {e}")
+
     output_template = os.path.join(DOWNLOAD_FOLDER, f'%(title)s_{uid}.%(ext)s')
     
     if format_id and format_id not in ('best', 'bestvideo+bestaudio', None):
