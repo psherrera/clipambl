@@ -16,7 +16,7 @@ import tempfile
 import yt_dlp
 import requests
 from typing import Optional, List
-from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -147,6 +147,9 @@ def get_robust_opts(target_url, extra={}):
 
     is_instagram = 'instagram.com' in target_url
     is_youtube = 'youtube.com' in target_url or 'youtu.be' in target_url
+    is_tiktok = 'tiktok.com' in target_url or 'vm.tiktok.com' in target_url
+    is_twitter = 'twitter.com' in target_url or 'x.com' in target_url or 't.co' in target_url
+    is_facebook = 'facebook.com' in target_url or 'fb.watch' in target_url or 'fb.com' in target_url
 
     cookie_path = os.path.join(BASE_DIR, 'cookies.txt')
     ig_cookie_path = os.path.join(BASE_DIR, 'cookies_ig.txt')
@@ -191,13 +194,29 @@ def get_robust_opts(target_url, extra={}):
                 opts['cookiefile'] = path_candidate
                 break
 
-    # Estrategia de clientes para YouTube
-    # Con cookies, solo "web" es compatible. Los clientes móviles no soportan cookies.
+    # Estrategia específica por plataforma
     if is_youtube:
+        # Con cookies, solo "web" es compatible. Los clientes móviles no soportan cookies.
         if 'cookiefile' in opts:
-            opts['extractor_args'] = {'youtube': {'player_client': ['web']}}
+            opts['extractor_args'] = {'youtube': {'player_client': ['web', 'mweb']}}
         else:
-            opts['extractor_args'] = {'youtube': {'player_client': ['tv_embedded', 'mweb']}}
+            opts['extractor_args'] = {'youtube': {'player_client': ['web', 'mweb']}}
+        opts['user_agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+
+    elif is_tiktok:
+        # TikTok requiere user-agent móvil y headers específicos
+        opts['user_agent'] = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Mobile/15E148 Safari/604.1'
+        opts['http_headers'] = {
+            'Referer': 'https://www.tiktok.com/',
+            'Accept-Language': 'es-419,es;q=0.9,en;q=0.8',
+        }
+
+    elif is_twitter:
+        # Twitter/X funciona mejor con user-agent desktop Chrome reciente
+        opts['user_agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+
+    elif is_facebook:
+        # Facebook requiere cookies para la mayoría del contenido público
         opts['user_agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
     return opts
@@ -622,6 +641,196 @@ async def check_cookies():
             "error": str(e),
             "server_time": time.strftime("%Y-%m-%d %H:%M:%S")
         }
+
+# --- TRANSCRIPCIÓN DE ARCHIVO DE AUDIO (WhatsApp, grabaciones, etc.) ---
+
+ALLOWED_AUDIO_EXTENSIONS = {'.ogg', '.opus', '.mp3', '.m4a', '.wav', '.mp4', '.aac', '.weba', '.webm'}
+MAX_AUDIO_SIZE_MB = 50
+
+@app.post("/api/transcript-file")
+async def transcript_audio_file(
+    file: UploadFile = File(...),
+    language: str = Form(default="es")
+):
+    """
+    Transcribe un archivo de audio subido directamente.
+    Soporta WhatsApp (.ogg/.opus), grabaciones de voz (.m4a/.mp3), y más.
+    """
+    if not groq_client:
+        raise HTTPException(status_code=503, detail="Groq API no configurada. Agregá GROQ_API_KEY en las variables de entorno.")
+
+    # Validar extensión
+    ext = os.path.splitext(file.filename or '')[1].lower()
+    if ext not in ALLOWED_AUDIO_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Formato no soportado: '{ext}'. Formatos válidos: {', '.join(ALLOWED_AUDIO_EXTENSIONS)}"
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Guardar archivo subido
+        input_path = os.path.join(tmpdir, f"input{ext}")
+        content = await file.read()
+
+        # Validar tamaño
+        size_mb = len(content) / (1024 * 1024)
+        if size_mb > MAX_AUDIO_SIZE_MB:
+            raise HTTPException(status_code=413, detail=f"El archivo es demasiado grande ({size_mb:.1f} MB). Máximo: {MAX_AUDIO_SIZE_MB} MB.")
+
+        with open(input_path, 'wb') as f:
+            f.write(content)
+
+        print(f"DEBUG: Archivo recibido: {file.filename} ({size_mb:.2f} MB), ext: {ext}")
+
+        # Convertir a MP3 si es necesario (WhatsApp usa .ogg/opus)
+        audio_path = input_path
+        if ext in {'.ogg', '.opus', '.m4a', '.wav', '.aac', '.weba', '.webm'}:
+            converted_path = os.path.join(tmpdir, "converted.mp3")
+            import subprocess
+            result = subprocess.run(
+                ['ffmpeg', '-i', input_path, '-ar', '16000', '-ac', '1', '-b:a', '64k', converted_path],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0 and os.path.exists(converted_path):
+                audio_path = converted_path
+                print(f"DEBUG: Convertido a MP3 exitosamente")
+            else:
+                print(f"DEBUG: ffmpeg error: {result.stderr}")
+                # Intentar con el archivo original si la conversión falla
+                audio_path = input_path
+
+        try:
+            file_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
+            transcription = ""
+
+            if AudioSegment and file_size_mb >= 20:
+                # Archivos grandes: trocear en partes de 20 minutos
+                print(f"Dividiendo audio de {file_size_mb:.1f}MB en partes...")
+                audio = AudioSegment.from_file(audio_path)
+                chunk_length_ms = 20 * 60 * 1000
+                chunks = [audio[i:i + chunk_length_ms] for i in range(0, len(audio), chunk_length_ms)]
+
+                for idx, chunk in enumerate(chunks):
+                    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as c_file:
+                        chunk.export(c_file.name, format="mp3", bitrate="64k")
+                        print(f"Transcribiendo parte {idx+1}/{len(chunks)}...")
+                        with open(c_file.name, "rb") as cf:
+                            part_text = groq_client.audio.transcriptions.create(
+                                file=(c_file.name, cf.read()),
+                                model="whisper-large-v3",
+                                response_format="text",
+                                language=language
+                            )
+                            transcription += str(part_text) + " "
+                        os.remove(c_file.name)
+            else:
+                with open(audio_path, "rb") as f:
+                    transcription = groq_client.audio.transcriptions.create(
+                        file=(os.path.basename(audio_path), f.read()),
+                        model="whisper-large-v3",
+                        response_format="text",
+                        language=language
+                    )
+
+            transcript_text = str(transcription).strip()
+            return {
+                "transcript": transcript_text,
+                "method": "groq_whisper_v3_file",
+                "filename": file.filename,
+                "size_mb": round(size_mb, 2)
+            }
+
+        except Exception as e:
+            print(f"Error en transcripción de archivo: {e}")
+            raise HTTPException(status_code=500, detail=f"Error al transcribir: {str(e)}")
+
+
+# --- HERRAMIENTAS PERIODÍSTICAS (IA) ---
+
+class AnalyzeRequest(BaseModel):
+    transcript: str
+    mode: str  # "summary" | "quotes" | "data" | "angle"
+
+JOURNALIST_PROMPTS = {
+    "summary": """Sos un asistente para periodistas especializados en comunicación política e imagen pública.
+Dado el siguiente texto transcripto, generá un RESUMEN EJECUTIVO periodístico de máximo 5 oraciones.
+Incluí: tema central, postura del hablante, y punto más relevante para una nota periodística.
+Respondé solo con el resumen, sin encabezados ni explicaciones.
+
+TRANSCRIPCIÓN:
+{transcript}""",
+
+    "quotes": """Sos un asistente para periodistas especializados en comunicación política e imagen pública.
+Dado el siguiente texto transcripto, extraé las CITAS TEXTUALES más relevantes para una nota periodística.
+Para cada cita, indicá en formato:
+• "[cita textual]" — [contexto breve de por qué es relevante]
+
+Seleccioná máximo 5 citas. Si no hay citas claras, indicalo.
+Respondé solo con las citas, sin introducción.
+
+TRANSCRIPCIÓN:
+{transcript}""",
+
+    "data": """Sos un asistente para periodistas especializados en comunicación política e imagen pública.
+Dado el siguiente texto transcripto, extraé todos los DATOS DUROS mencionados:
+- Fechas y plazos
+- Cifras, porcentajes, montos
+- Nombres de personas y sus cargos
+- Instituciones y organizaciones
+- Lugares geográficos relevantes
+
+Organizalos en una lista clara. Si no hay datos duros, indicalo.
+Respondé solo con los datos, sin introducción.
+
+TRANSCRIPCIÓN:
+{transcript}""",
+
+    "angle": """Sos un editor de medios con experiencia en periodismo político y comunicación institucional.
+Dado el siguiente texto transcripto, sugerí 3 ÁNGULOS PERIODÍSTICOS posibles para cubrir este contenido:
+Para cada ángulo incluí:
+• Título sugerido para la nota
+• Por qué es el ángulo más relevante
+
+Respondé directamente con los 3 ángulos, sin introducción.
+
+TRANSCRIPCIÓN:
+{transcript}"""
+}
+
+@app.post("/api/analyze")
+async def analyze_transcript(req: AnalyzeRequest):
+    """
+    Analiza una transcripción con IA para uso periodístico.
+    Modos: summary (resumen), quotes (citas), data (datos duros), angle (ángulos de nota)
+    """
+    if not groq_client:
+        raise HTTPException(status_code=503, detail="Groq API no configurada.")
+
+    if req.mode not in JOURNALIST_PROMPTS:
+        raise HTTPException(status_code=400, detail=f"Modo inválido. Opciones: {list(JOURNALIST_PROMPTS.keys())}")
+
+    if len(req.transcript.strip()) < 50:
+        raise HTTPException(status_code=400, detail="La transcripción es demasiado corta para analizar.")
+
+    # Truncar si es muy larga (Groq tiene límite de tokens)
+    transcript = req.transcript[:12000] if len(req.transcript) > 12000 else req.transcript
+
+    prompt = JOURNALIST_PROMPTS[req.mode].format(transcript=transcript)
+
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1000,
+            temperature=0.3
+        )
+        result = response.choices[0].message.content.strip()
+        return {"result": result, "mode": req.mode}
+
+    except Exception as e:
+        print(f"Error en análisis periodístico: {e}")
+        raise HTTPException(status_code=500, detail=f"Error al analizar: {str(e)}")
+
 
 # --- SERVIDO DE FRONTEND ---
 # Este bloque DEBE ir al final para no interceptar rutas de la API

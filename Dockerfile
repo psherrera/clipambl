@@ -1,10 +1,16 @@
 # Use python-slim for a smaller image
 FROM python:3.11-slim
 
-# Install system dependencies (FFmpeg only)
+# Install system dependencies (FFmpeg and curl for Deno)
 RUN apt-get update && apt-get install -y \
     ffmpeg \
+    curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Deno (runtime JS requerido por yt-dlp para YouTube)
+RUN curl -fsSL https://deno.land/install.sh | sh
+ENV DENO_INSTALL="/root/.deno"
+ENV PATH="$DENO_INSTALL/bin:$PATH"
 
 WORKDIR /app
 
