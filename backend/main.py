@@ -1,3 +1,12 @@
+"""
+YT Downloader Pro - Backend
+Optimized for Render.com deployment.
+Features: 
+- Heavy dependency removal (Whisper/Torch).
+- Groq API & YouTube Subtitle fallback for transcription.
+- Robust Bot-Evasion strategy using mobile client emulation.
+- Automated cleanup of downloaded files.
+"""
 import os
 import uuid
 import json
@@ -246,12 +255,13 @@ async def get_video_info(req: VideoRequest, request: Request):
             'label': 'Mejor calidad (.mp4)'
         })
 
-    # Proxy para Instagram thumbnails
+    # Proxy para miniaturas de Instagram
+    # Se añade encoding y el prefijo /api/ para resolver problemas de carga en el frontend
     thumbnail = info.get('thumbnail')
     if 'instagram.com' in url and thumbnail:
         from urllib.parse import quote
         thumbnail = f"/api/proxy-thumbnail?url={quote(thumbnail, safe='')}"
-        print(f"DEBUG: Instagram Thumbnail proxied: {thumbnail}")
+        print(f"DEBUG: Instagram Thumbnail proxied (with encoding): {thumbnail}")
 
     return {
         'title': info.get('title'),

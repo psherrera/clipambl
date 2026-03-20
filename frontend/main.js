@@ -1,3 +1,8 @@
+/**
+ * YT Downloader Pro - Frontend (StreamVault)
+ * Premium interface with support for YouTube, Instagram, and AI Transcriptions.
+ * Optimized for both desktop and mobile devices.
+ */
 document.addEventListener('DOMContentLoaded', () => {
     // UI Elements
     const videoUrlInput = document.getElementById('video-url');
