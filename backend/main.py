@@ -229,6 +229,16 @@ async def get_video_info(req: VideoRequest, request: Request):
             })
             seen_res.add(res_key)
 
+    # Si no hay formatos (Shorts, videos con DRM, etc.), agregar opción genérica
+    if not formats:
+        formats.append({
+            'format_id': 'best',
+            'ext': 'mp4',
+            'resolution': 'Mejor calidad',
+            'filesize': None,
+            'label': 'Mejor calidad (.mp4)'
+        })
+
     # Proxy para Instagram thumbnails (Usamos ruta relativa para que el frontend la complete)
     thumbnail = info.get('thumbnail')
     if 'instagram.com' in url and thumbnail:
@@ -388,9 +398,15 @@ async def download_video(req: VideoRequest, background_tasks: BackgroundTasks):
     uid = str(uuid.uuid4())
     output_template = os.path.join(DOWNLOAD_FOLDER, f'%(title)s_{uid}.%(ext)s')
     
+    if format_id and format_id not in ('best', 'bestvideo+bestaudio', None):
+        fmt = f"{format_id}/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
+    else:
+        fmt = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best'
+
     opts = get_robust_opts(url, {
-        'format': format_id,
+        'format': fmt,
         'outtmpl': output_template,
+        'merge_output_format': 'mp4',
     })
 
     try:
