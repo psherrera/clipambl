@@ -100,34 +100,67 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        container.innerHTML = history.map((item, i) => {
+        container.innerHTML = '';
+        history.forEach((item, i) => {
             const date = new Date(item.date).toLocaleDateString('es-AR', { day:'2-digit', month:'short', year:'numeric' });
             const platformIcon = PLATFORMS[item.platform]?.icon || 'link';
             const preview = item.transcript ? item.transcript.substring(0, 140) + '...' : 'Sin transcripcion';
-            return `
-            <div class="glass rounded-2xl p-5 space-y-3 fade-in">
-                <div class="flex items-start justify-between gap-3">
-                    <div class="flex items-center gap-2 min-w-0">
-                        <span class="material-symbols-outlined text-primary text-lg flex-shrink-0">${platformIcon}</span>
-                        <span class="text-white font-semibold text-sm truncate">${item.title || item.url}</span>
-                    </div>
-                    <span class="text-slate-500 text-[10px] flex-shrink-0 font-mono">${date}</span>
-                </div>
-                ${item.transcript ? `
-                <p class="text-slate-400 text-xs leading-relaxed line-clamp-2">${preview}</p>
-                <div class="flex gap-2 flex-wrap">
-                    <button onclick="window._hist.copy(${i})" class="text-[10px] font-bold uppercase tracking-widest bg-accent/20 text-accent px-3 py-1.5 rounded-full hover:bg-accent/30 transition-all flex items-center gap-1">
-                        <span class="material-symbols-outlined text-xs">content_copy</span> Copiar
-                    </button>
-                    <button onclick="window._hist.download(${i})" class="text-[10px] font-bold uppercase tracking-widest bg-white/5 text-slate-300 px-3 py-1.5 rounded-full hover:bg-white/10 transition-all flex items-center gap-1">
-                        <span class="material-symbols-outlined text-xs">download</span> .txt
-                    </button>
-                    <button onclick="window._hist.remove(${i})" class="text-[10px] font-bold uppercase tracking-widest bg-red-500/10 text-red-400 px-3 py-1.5 rounded-full hover:bg-red-500/20 transition-all flex items-center gap-1 ml-auto">
-                        <span class="material-symbols-outlined text-xs">delete</span>
-                    </button>
-                </div>` : ''}
-            </div>`;
-        }).join('');
+
+            const card = document.createElement('div');
+            card.className = 'glass rounded-2xl p-5 space-y-3 fade-in';
+
+            const header = document.createElement('div');
+            header.className = 'flex items-start justify-between gap-3';
+
+            const titleWrap = document.createElement('div');
+            titleWrap.className = 'flex items-center gap-2 min-w-0';
+
+            const icon = document.createElement('span');
+            icon.className = 'material-symbols-outlined text-primary text-lg flex-shrink-0';
+            icon.textContent = platformIcon;
+
+            const title = document.createElement('span');
+            title.className = 'text-white font-semibold text-sm truncate';
+            title.textContent = item.title || item.url;
+
+            const dateEl = document.createElement('span');
+            dateEl.className = 'text-slate-500 text-[10px] flex-shrink-0 font-mono';
+            dateEl.textContent = date;
+
+            titleWrap.append(icon, title);
+            header.append(titleWrap, dateEl);
+            card.appendChild(header);
+
+            if (item.transcript) {
+                const previewEl = document.createElement('p');
+                previewEl.className = 'text-slate-400 text-xs leading-relaxed line-clamp-2';
+                previewEl.textContent = preview;
+                card.appendChild(previewEl);
+
+                const actions = document.createElement('div');
+                actions.className = 'flex gap-2 flex-wrap';
+
+                const copyBtn = document.createElement('button');
+                copyBtn.className = 'text-[10px] font-bold uppercase tracking-widest bg-accent/20 text-accent px-3 py-1.5 rounded-full hover:bg-accent/30 transition-all flex items-center gap-1';
+                copyBtn.innerHTML = '<span class="material-symbols-outlined text-xs">content_copy</span> Copiar';
+                copyBtn.addEventListener('click', () => window._hist.copy(i));
+
+                const downloadBtn = document.createElement('button');
+                downloadBtn.className = 'text-[10px] font-bold uppercase tracking-widest bg-white/5 text-slate-300 px-3 py-1.5 rounded-full hover:bg-white/10 transition-all flex items-center gap-1';
+                downloadBtn.innerHTML = '<span class="material-symbols-outlined text-xs">download</span> .txt';
+                downloadBtn.addEventListener('click', () => window._hist.download(i));
+
+                const removeBtn = document.createElement('button');
+                removeBtn.className = 'text-[10px] font-bold uppercase tracking-widest bg-red-500/10 text-red-400 px-3 py-1.5 rounded-full hover:bg-red-500/20 transition-all flex items-center gap-1 ml-auto';
+                removeBtn.innerHTML = '<span class="material-symbols-outlined text-xs">delete</span>';
+                removeBtn.addEventListener('click', () => window._hist.remove(i));
+
+                actions.append(copyBtn, downloadBtn, removeBtn);
+                card.appendChild(actions);
+            }
+
+            container.appendChild(card);
+        });
     }
 
     window._hist = {
@@ -377,7 +410,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await r.json();
 
             if (data.error) {
-                transcriptContent.innerHTML = `<div class="bg-red-500/10 p-4 rounded-xl border border-red-500/20 text-red-400 text-sm">Error: ${data.error.replace(/\u001b\[[0-9;]*m/g, '')}</div>`;
+                transcriptContent.innerHTML = '';
+                const errorBox = document.createElement('div');
+                errorBox.className = 'bg-red-500/10 p-4 rounded-xl border border-red-500/20 text-red-400 text-sm';
+                errorBox.textContent = `Error: ${data.error.replace(/\u001b\[[0-9;]*m/g, '')}`;
+                transcriptContent.appendChild(errorBox);
                 return;
             }
 
@@ -388,18 +425,34 @@ document.addEventListener('DOMContentLoaded', () => {
             saveToHistory({ url, platform: detectPlatformFromUrl(url), title: titleEl.textContent || url, transcript: data.transcript });
 
         } catch (err) {
-            transcriptContent.innerHTML = `<p class="text-red-400 text-sm">Error al conectar con el servidor.</p>`;
+            transcriptContent.innerHTML = '';
+            const errorText = document.createElement('p');
+            errorText.className = 'text-red-400 text-sm';
+            errorText.textContent = 'Error al conectar con el servidor.';
+            transcriptContent.appendChild(errorText);
         } finally { showTranscriptBtn.disabled = false; }
     });
 
     function renderTranscript(text, method) {
         const methodLabels = { subtitles: 'Subtitulos directos', groq_whisper_v3: 'IA Whisper v3 (Groq)', groq_whisper_v3_file: 'IA Whisper v3 - Archivo', cache: 'Cache local' };
-        transcriptContent.innerHTML = `
-            <p class="text-slate-300 text-sm leading-relaxed mb-4">${text}</p>
-            <div class="flex items-center gap-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest bg-white/5 py-1 px-3 rounded-full w-fit mb-4">
-                <span class="material-symbols-outlined text-xs">auto_awesome</span>
-                ${methodLabels[method] || method}
-            </div>`;
+        transcriptContent.innerHTML = '';
+
+        const textEl = document.createElement('p');
+        textEl.className = 'text-slate-300 text-sm leading-relaxed mb-4';
+        textEl.textContent = text;
+
+        const badge = document.createElement('div');
+        badge.className = 'flex items-center gap-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest bg-white/5 py-1 px-3 rounded-full w-fit mb-4';
+
+        const icon = document.createElement('span');
+        icon.className = 'material-symbols-outlined text-xs';
+        icon.textContent = 'auto_awesome';
+
+        const label = document.createElement('span');
+        label.textContent = methodLabels[method] || method;
+
+        badge.append(icon, label);
+        transcriptContent.append(textEl, badge);
 
         // Inject journalist tools below transcript
         const toolsHtml = buildJournalistToolsHtml('vc');
@@ -426,12 +479,15 @@ document.addEventListener('DOMContentLoaded', () => {
         const ext = '.' + file.name.split('.').pop().toLowerCase();
         if (!ALLOWED.includes(ext)) { showToast(`Formato no soportado: ${ext}`, 'error'); return; }
 
-        if (waDropZone) waDropZone.innerHTML = `
-            <div class="flex flex-col items-center gap-3">
-                <div class="w-10 h-10 border-4 border-slate-700 border-t-primary rounded-full animate-spin"></div>
-                <p class="font-semibold text-white text-sm">${file.name}</p>
-                <p class="text-slate-400 text-xs animate-pulse">Transcribiendo con IA Whisper...</p>
-            </div>`;
+        if (waDropZone) {
+            waDropZone.innerHTML = `
+                <div class="flex flex-col items-center gap-3">
+                    <div class="w-10 h-10 border-4 border-slate-700 border-t-primary rounded-full animate-spin"></div>
+                    <p class="font-semibold text-white text-sm" id="wa-current-file"></p>
+                    <p class="text-slate-400 text-xs animate-pulse">Transcribiendo con IA Whisper...</p>
+                </div>`;
+            waDropZone.querySelector('#wa-current-file').textContent = file.name;
+        }
 
         const formData = new FormData();
         formData.append('file', file);
@@ -453,19 +509,23 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <span class="bg-emerald-500/20 text-emerald-400 p-1.5 rounded-lg flex items-center"><span class="material-symbols-outlined text-sm">check_circle</span></span>
                                 <span class="text-white font-bold text-sm">Transcripcion lista</span>
                             </div>
-                            <span class="text-slate-500 text-xs">${data.size_mb} MB</span>
+                            <span class="text-slate-500 text-xs" id="wa-size"></span>
                         </div>
-                        <p class="text-slate-300 text-sm leading-relaxed border border-white/5 rounded-xl p-4 bg-black/20">${data.transcript}</p>
+                        <p class="text-slate-300 text-sm leading-relaxed border border-white/5 rounded-xl p-4 bg-black/20" id="wa-transcript-text"></p>
                         <div class="flex gap-2 flex-wrap">
-                            <button onclick="window._wa.copy()" class="text-[10px] font-bold uppercase tracking-widest bg-accent/20 text-accent px-3 py-2 rounded-full hover:bg-accent/30 transition-all flex items-center gap-1">
+                            <button id="wa-copy-btn" class="text-[10px] font-bold uppercase tracking-widest bg-accent/20 text-accent px-3 py-2 rounded-full hover:bg-accent/30 transition-all flex items-center gap-1">
                                 <span class="material-symbols-outlined text-xs">content_copy</span> Copiar
                             </button>
-                            <button onclick="window._wa.download('${file.name}')" class="text-[10px] font-bold uppercase tracking-widest bg-white/5 text-slate-300 px-3 py-2 rounded-full hover:bg-white/10 transition-all flex items-center gap-1">
+                            <button id="wa-download-btn" class="text-[10px] font-bold uppercase tracking-widest bg-white/5 text-slate-300 px-3 py-2 rounded-full hover:bg-white/10 transition-all flex items-center gap-1">
                                 <span class="material-symbols-outlined text-xs">download</span> .txt
                             </button>
                         </div>
                         ${buildJournalistToolsHtml('wa')}
                     </div>`;
+                waResult.querySelector('#wa-size').textContent = `${data.size_mb} MB`;
+                waResult.querySelector('#wa-transcript-text').textContent = data.transcript;
+                waResult.querySelector('#wa-copy-btn')?.addEventListener('click', () => window._wa.copy());
+                waResult.querySelector('#wa-download-btn')?.addEventListener('click', () => window._wa.download(file.name));
             }
 
             saveToHistory({ url: `whatsapp:${file.name}`, platform: 'whatsapp', title: file.name, transcript: data.transcript });
@@ -477,10 +537,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
         } catch (err) {
             showToast(`Error: ${err.message}`, 'error');
-            if (waDropZone) waDropZone.innerHTML = `
-                <span class="material-symbols-outlined text-red-400 text-4xl mb-2">error</span>
-                <p class="text-red-300 text-sm font-semibold">Error al procesar</p>
-                <p class="text-slate-500 text-xs">${err.message}</p>`;
+            if (waDropZone) {
+                waDropZone.innerHTML = `
+                    <span class="material-symbols-outlined text-red-400 text-4xl mb-2">error</span>
+                    <p class="text-red-300 text-sm font-semibold">Error al procesar</p>
+                    <p class="text-slate-500 text-xs" id="wa-error-message"></p>`;
+                waDropZone.querySelector('#wa-error-message').textContent = err.message;
+            }
         }
     }
 
@@ -572,11 +635,16 @@ document.addEventListener('DOMContentLoaded', () => {
                         <span class="material-symbols-outlined text-base ${cfg.color}">${cfg.icon}</span>
                         <span class="font-bold text-white text-sm">${cfg.label}</span>
                     </div>
-                    <button onclick="navigator.clipboard.writeText(this.closest('[id]').querySelector('.ai-result-text')?.textContent||''); this.textContent='Copiado'" class="text-[10px] font-bold uppercase tracking-widest bg-white/5 text-slate-400 px-2 py-1 rounded-full hover:bg-white/10 transition-all">
+                    <button id="${prefix}-copy-ai-btn" class="text-[10px] font-bold uppercase tracking-widest bg-white/5 text-slate-400 px-2 py-1 rounded-full hover:bg-white/10 transition-all">
                         Copiar
                     </button>
                 </div>
-                <div class="ai-result-text text-slate-300 text-sm leading-relaxed whitespace-pre-wrap">${data.result}</div>`;
+                <div class="ai-result-text text-slate-300 text-sm leading-relaxed whitespace-pre-wrap"></div>`;
+            outputEl.querySelector('.ai-result-text').textContent = data.result;
+            outputEl.querySelector(`#${prefix}-copy-ai-btn`)?.addEventListener('click', (event) => {
+                navigator.clipboard.writeText(data.result || '');
+                event.currentTarget.textContent = 'Copiado';
+            });
 
         } catch (err) {
             outputEl.innerHTML = `<p class="text-red-400 text-xs">Error: ${err.message}</p>`;
@@ -615,7 +683,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const icons  = { error: 'error', success: 'check_circle', info: 'info' };
         const toast  = document.createElement('div');
         toast.className = `fixed top-6 left-1/2 -translate-x-1/2 z-[200] flex items-center gap-3 px-5 py-3 rounded-2xl text-white text-sm font-semibold shadow-2xl ${colors[type]} fade-in`;
-        toast.innerHTML = `<span class="material-symbols-outlined text-lg">${icons[type]}</span>${message}`;
+        const icon = document.createElement('span');
+        icon.className = 'material-symbols-outlined text-lg';
+        icon.textContent = icons[type];
+        const text = document.createElement('span');
+        text.textContent = message;
+        toast.append(icon, text);
         document.body.appendChild(toast);
         setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 400); }, 3500);
     }

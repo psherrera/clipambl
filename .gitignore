@@ -3,13 +3,16 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.py[cod]
 
 # App specific
 backend/downloads/
 backend/model/
 backend/transcripts_cache.json
 backend/cookies.txt
+backend/cookies_ig.txt
 backend/NULL
+backend/__pycache__/
 
 # Docker
 .docker/

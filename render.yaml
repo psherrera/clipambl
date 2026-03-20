@@ -12,3 +12,5 @@ services:
         value: "true"
       - key: GROQ_API_KEY
         sync: false
+      - key: DOWNLOADER_BASE_URL
+        sync: false

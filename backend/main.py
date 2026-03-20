@@ -10,23 +10,25 @@ Features:
 import os
 import uuid
 import json
-import gc
 import re
 import tempfile
 import yt_dlp
 import requests
-from typing import Optional, List
+from typing import Optional
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks, UploadFile, File, Form
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from deep_translator import GoogleTranslator
 from fastapi import Response
-from fastapi.staticfiles import StaticFiles
 import asyncio
 import base64
+import ipaddress
 import random
+import socket
+import subprocess
 import time
+from urllib.parse import quote, urlparse
 try:
     from pydub import AudioSegment
 except ImportError:
@@ -40,6 +42,7 @@ except ImportError:
 # --- CONFIGURACIÓN DE ENTORNO ---
 IS_RENDER = os.environ.get('RENDER') is not None
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
+DOWNLOADER_BASE_URL = (os.environ.get('DOWNLOADER_BASE_URL') or '').rstrip('/')
 
 try:
     from groq import Groq
@@ -126,6 +129,310 @@ def translate_to_spanish(text):
         print(f"Error traducción: {e}")
         return text
 
+# --- HELPERS ---
+ALLOWED_PROXY_HOST_SUFFIXES = (
+    "cdninstagram.com",
+    "fbcdn.net",
+    "instagram.com",
+)
+
+PRIVATE_PROXY_IP_NETWORKS = (
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+)
+
+
+def add_proxy_thumbnail(url):
+    if not url:
+        return None
+    return f"/api/proxy-thumbnail?url={quote(url, safe='')}"
+
+
+def is_safe_proxy_url(url):
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+
+    hostname = parsed.hostname.lower()
+    if not any(hostname == suffix or hostname.endswith(f".{suffix}") for suffix in ALLOWED_PROXY_HOST_SUFFIXES):
+        return False
+
+    try:
+        addrinfo = socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80))
+    except socket.gaierror:
+        return False
+
+    for _, _, _, _, sockaddr in addrinfo:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if any(ip in network for network in PRIVATE_PROXY_IP_NETWORKS):
+            return False
+
+    return True
+
+
+def read_transcript_cache(url):
+    cache = load_cache()
+    return cache.get(url)
+
+
+def write_transcript_cache(url, transcript):
+    cache = load_cache()
+    cache[url] = transcript
+    save_cache(cache)
+
+
+def find_subtitle_file(tmpdir):
+    for filename in os.listdir(tmpdir):
+        if filename.startswith('sub.') and ('.es' in filename or '.es-419' in filename):
+            return os.path.join(tmpdir, filename), False
+
+    for filename in os.listdir(tmpdir):
+        if filename.startswith('sub.') and ('.en' in filename or '.en-US' in filename):
+            return os.path.join(tmpdir, filename), True
+
+    return None, False
+
+
+def clean_vtt_content(content):
+    content = re.sub(r'WEBVTT.*?\n\n', '', content, flags=re.DOTALL)
+    content = re.sub(r'\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3}.*?\n', '', content)
+    content = re.sub(r'^\d+\n', '', content, flags=re.MULTILINE)
+    content = re.sub(r'<[^>]*>', '', content)
+    return ' '.join(line.strip() for line in content.split('\n') if line.strip())
+
+
+def transcribe_audio_with_groq(audio_path, language="es"):
+    if not groq_client:
+        raise Exception("Groq API no configurada y no se encontraron subtitulos.")
+
+    file_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
+    transcription = ""
+
+    if AudioSegment and file_size_mb >= 20:
+        print(f"Dividiendo audio de {file_size_mb:.1f}MB en partes de 20 min...")
+        audio = AudioSegment.from_file(audio_path)
+        chunk_length_ms = 20 * 60 * 1000
+        chunks = [audio[i:i + chunk_length_ms] for i in range(0, len(audio), chunk_length_ms)]
+
+        for idx, chunk in enumerate(chunks):
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as chunk_file:
+                chunk_path = chunk_file.name
+            try:
+                chunk.export(chunk_path, format="mp3", bitrate="64k")
+                print(f"Transcribiendo parte {idx + 1}/{len(chunks)}...")
+                with open(chunk_path, "rb") as fh:
+                    part_text = groq_client.audio.transcriptions.create(
+                        file=(os.path.basename(chunk_path), fh.read()),
+                        model="whisper-large-v3",
+                        response_format="text",
+                        language=language
+                    )
+                transcription += str(part_text) + " "
+            finally:
+                if os.path.exists(chunk_path):
+                    os.remove(chunk_path)
+    else:
+        with open(audio_path, "rb") as fh:
+            transcription = groq_client.audio.transcriptions.create(
+                file=(os.path.basename(audio_path), fh.read()),
+                model="whisper-large-v3",
+                response_format="text",
+                language=language
+            )
+
+    return str(transcription).strip()
+
+
+def convert_audio_to_mp3_if_needed(input_path, ext, tmpdir):
+    if ext not in {'.ogg', '.opus', '.m4a', '.wav', '.aac', '.weba', '.webm'}:
+        return input_path
+
+    converted_path = os.path.join(tmpdir, "converted.mp3")
+    result = subprocess.run(
+        ['ffmpeg', '-i', input_path, '-ar', '16000', '-ac', '1', '-b:a', '64k', converted_path],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0 and os.path.exists(converted_path):
+        print("DEBUG: Convertido a MP3 exitosamente")
+        return converted_path
+
+    print(f"DEBUG: ffmpeg error: {result.stderr}")
+    return input_path
+
+
+def fetch_video_info_sync(url):
+    info = None
+    last_error = ""
+
+    try:
+        opts = get_robust_opts(url)
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as primary_error:
+        last_error = str(primary_error)
+        print(f"Error en extraccion primaria: {last_error}")
+        try:
+            opts = get_robust_opts(url)
+            if 'youtube.com' in url or 'youtu.be' in url:
+                opts['extractor_args'] = {'youtube': {'player_client': ['web_safari', 'tv_embedded']}}
+                opts.pop('cookiefile', None)
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception as fallback_error:
+            last_error = f"{last_error} | {fallback_error}"
+
+    return info, last_error
+
+
+def extract_transcript_sync(url):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        try:
+            if 'youtube.com' in url or 'youtu.be' in url:
+                ydl_opts_subs = get_robust_opts(url, {
+                    'skip_download': True,
+                    'writesubtitles': True,
+                    'writeautomaticsub': True,
+                    'subtitleslangs': ['es.*', 'en.*'],
+                    'outtmpl': os.path.join(tmpdir, 'sub.%(ext)s'),
+                })
+                with yt_dlp.YoutubeDL(ydl_opts_subs) as ydl:
+                    ydl.extract_info(url, download=True)
+
+                sub_file, is_english = find_subtitle_file(tmpdir)
+                if sub_file:
+                    with open(sub_file, 'r', encoding='utf-8') as fh:
+                        final_text = clean_vtt_content(fh.read())
+                    if is_english:
+                        final_text = translate_to_spanish(final_text)
+                    write_transcript_cache(url, final_text)
+                    return {"transcript": final_text, "method": "subtitles"}
+
+            audio_opts = get_robust_opts(url, {
+                'format': 'bestaudio/best',
+                'outtmpl': os.path.join(tmpdir, 'audio.%(ext)s'),
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '64',
+                }]
+            })
+            with yt_dlp.YoutubeDL(audio_opts) as ydl:
+                ydl.download([url])
+
+            audio_file = next(
+                (os.path.join(tmpdir, filename) for filename in os.listdir(tmpdir) if filename.startswith('audio.')),
+                None
+            )
+            if not audio_file:
+                raise Exception("No se pudo descargar audio")
+
+            transcript = transcribe_audio_with_groq(audio_file, "es")
+            write_transcript_cache(url, transcript)
+            return {"transcript": transcript, "method": "groq_whisper_v3"}
+        except Exception as exc:
+            return {"error": str(exc)}
+
+
+def cleanup_file(path):
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+            print(f"DEBUG: Archivo borrado: {path}")
+    except Exception as exc:
+        print(f"Error borrando archivo: {exc}")
+
+
+def should_proxy_downloader():
+    return bool(DOWNLOADER_BASE_URL)
+
+
+def proxy_json_post_sync(path, payload):
+    if not should_proxy_downloader():
+        return None
+
+    url = f"{DOWNLOADER_BASE_URL}{path}"
+    try:
+        resp = requests.post(url, json=payload, timeout=180)
+        data = resp.json()
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Downloader remoto no disponible: {exc}")
+    except ValueError:
+        raise HTTPException(status_code=502, detail="Downloader remoto devolvio una respuesta invalida.")
+
+    if resp.ok:
+        return data
+
+    detail = data.get("detail") or data.get("error") or "Error remoto en downloader."
+    raise HTTPException(status_code=resp.status_code, detail=detail)
+
+
+def proxy_stream_post_sync(path, payload):
+    if not should_proxy_downloader():
+        return None
+
+    url = f"{DOWNLOADER_BASE_URL}{path}"
+    try:
+        resp = requests.post(url, json=payload, timeout=600, stream=True)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Downloader remoto no disponible: {exc}")
+
+    media_type = resp.headers.get('Content-Type', 'application/octet-stream')
+    disposition = resp.headers.get('Content-Disposition')
+    headers = {}
+    if disposition:
+        headers['Content-Disposition'] = disposition
+
+    return resp, media_type, headers
+
+
+def download_instagram_video_sync(url, uid):
+    ig_info = get_instagram_info(url)
+    if not ig_info['is_video']:
+        raise HTTPException(status_code=400, detail="Este post de Instagram no tiene video.")
+
+    headers = {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3_1 like Mac OS X) AppleWebKit/605.1.15'}
+    resp = requests.get(ig_info['video_url'], headers=headers, stream=True, timeout=60)
+    resp.raise_for_status()
+
+    file_path = os.path.join(DOWNLOAD_FOLDER, f'instagram_{uid}.mp4')
+    with open(file_path, 'wb') as fh:
+        for chunk in resp.iter_content(chunk_size=8192):
+            fh.write(chunk)
+
+    filename = f"{ig_info['title'][:30].strip()}_{uid}.mp4"
+    return file_path, filename, 'video/mp4'
+
+
+def download_video_sync(url, format_id, uid):
+    output_template = os.path.join(DOWNLOAD_FOLDER, f'%(title)s_{uid}.%(ext)s')
+    if format_id and format_id not in ('best', 'bestvideo+bestaudio', None):
+        fmt = f"{format_id}/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
+    else:
+        fmt = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best'
+
+    opts = get_robust_opts(url, {
+        'format': fmt,
+        'outtmpl': output_template,
+        'merge_output_format': 'mp4',
+    })
+
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        ydl.download([url])
+
+    for filename in os.listdir(DOWNLOAD_FOLDER):
+        if uid in filename:
+            return os.path.join(DOWNLOAD_FOLDER, filename), filename, None
+
+    raise Exception("Archivo no encontrado")
+
+
 # --- MODELOS DE DATOS ---
 class VideoRequest(BaseModel):
     url: str
@@ -135,8 +442,9 @@ class VideoRequest(BaseModel):
 
 
 # --- UNIFIED ROBUST OPTIONS (COOKIES & CLIENTS) ---
-def get_robust_opts(target_url, extra={}):
+def get_robust_opts(target_url, extra=None):
     """Genera opciones unificadas para yt-dlp con soporte para cookies locales y de entorno."""
+    extra = extra or {}
     USER_AGENTS = [
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -197,11 +505,19 @@ def get_robust_opts(target_url, extra={}):
     # Estrategia específica por plataforma
     if is_youtube:
         bgutil_script = '/opt/bgutil/server/src/generate_once.ts'
+        # Reducimos agresividad para evitar gatillar bloqueos por ritmo/IP.
+        opts.update({
+            'sleep_interval_requests': 1,
+            'sleep_interval': 2,
+            'max_sleep_interval': 5,
+            'retries': 2,
+            'fragment_retries': 2,
+        })
         if os.path.exists(bgutil_script):
-            # Con bgutil PO token provider activo
+            # Camino principal: mweb + PO token. web_safari ayuda en algunos streams HLS.
             opts['extractor_args'] = {
                 'youtube': {
-                    'player_client': ['web'],
+                    'player_client': ['mweb', 'web_safari'],
                     'fetch_pot': ['always'],
                 },
                 'getpot_bgutil_script': {
@@ -210,9 +526,11 @@ def get_robust_opts(target_url, extra={}):
             }
             print("DEBUG: bgutil PO token provider activado")
         elif 'cookiefile' in opts:
-            opts['extractor_args'] = {'youtube': {'player_client': ['web']}}
+            # Si hay cookies válidas, intentamos con clientes de navegador antes de caer a embedded.
+            opts['extractor_args'] = {'youtube': {'player_client': ['mweb', 'web_safari', 'web']}}
         else:
-            opts['extractor_args'] = {'youtube': {'player_client': ['tv_embedded']}}
+            # Fallback sin PO token ni cookies. tv_embedded queda como último recurso.
+            opts['extractor_args'] = {'youtube': {'player_client': ['mweb', 'tv_embedded']}}
         opts['user_agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
     elif is_tiktok:
@@ -291,6 +609,9 @@ def get_instagram_info(url):
 @app.post("/api/video-info")
 async def get_video_info(req: VideoRequest, request: Request):
     url = req.url
+    if should_proxy_downloader():
+        return await asyncio.to_thread(proxy_json_post_sync, "/api/video-info", req.model_dump())
+
     is_instagram = 'instagram.com' in url
 
     # --- INSTAGRAM: usar instaloader ---
@@ -302,10 +623,7 @@ async def get_video_info(req: VideoRequest, request: Request):
             else:
                 formats = [{'format_id': 'best', 'ext': 'jpg', 'resolution': 'Imagen original', 'filesize': None, 'label': 'Imagen original (.jpg)'}]
 
-            thumbnail = ig_info.get('thumbnail')
-            if thumbnail:
-                from urllib.parse import quote
-                thumbnail = f"/api/proxy-thumbnail?url={quote(thumbnail, safe='')}"
+            thumbnail = add_proxy_thumbnail(ig_info.get('thumbnail'))
 
             return {
                 'title': ig_info['title'],
@@ -323,27 +641,7 @@ async def get_video_info(req: VideoRequest, request: Request):
 
     is_youtube = 'youtube.com' in url or 'youtu.be' in url
 
-    info = None
-    last_error = ""
-    
-    # Intentos de extracción con opciones unificadas
-    try:
-        opts = get_robust_opts(url)
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-    except Exception as e:
-        last_error = str(e)
-        print(f"Error en extracción primaria: {last_error}")
-        # Intento secundario sin cookies como fallback
-        try:
-            opts2 = get_robust_opts(url)
-            if 'youtube.com' in url or 'youtu.be' in url:
-                opts2['extractor_args'] = {'youtube': {'player_client': ['tv_embedded']}}
-                opts2.pop('cookiefile', None)
-            with yt_dlp.YoutubeDL(opts2) as ydl:
-                info = ydl.extract_info(url, download=False)
-        except Exception as e2:
-            last_error = f"{last_error} | {str(e2)}"
+    info, last_error = await asyncio.to_thread(fetch_video_info_sync, url)
 
     if not info:
         print(f"DEBUG: EXTRACT_INFO FAILED for {url}. Last error: {last_error}")
@@ -390,8 +688,7 @@ async def get_video_info(req: VideoRequest, request: Request):
     # Se añade encoding y el prefijo /api/ para resolver problemas de carga en el frontend
     thumbnail = info.get('thumbnail')
     if 'instagram.com' in url and thumbnail:
-        from urllib.parse import quote
-        thumbnail = f"/api/proxy-thumbnail?url={quote(thumbnail, safe='')}"
+        thumbnail = add_proxy_thumbnail(thumbnail)
         print(f"DEBUG: Instagram Thumbnail proxied (with encoding): {thumbnail}")
 
     return {
@@ -409,135 +706,17 @@ async def get_video_info(req: VideoRequest, request: Request):
 @app.post("/api/transcript")
 async def get_transcript(req: VideoRequest):
     url = req.url
-    cache = load_cache()
-    if url in cache:
-        return {"transcript": cache[url], "method": "cache"}
+    if should_proxy_downloader():
+        return await asyncio.to_thread(proxy_json_post_sync, "/api/transcript", req.model_dump())
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        try:
-            if 'youtube.com' in url or 'youtu.be' in url:
-                ydl_opts_subs = get_robust_opts(url, {
-                    'skip_download': True,
-                    'writesubtitles': True,
-                    'writeautomaticsub': True,
-                    'subtitleslangs': ['es.*', 'en.*'],
-                    'outtmpl': os.path.join(tmpdir, 'sub.%(ext)s'),
-                })
-                with yt_dlp.YoutubeDL(ydl_opts_subs) as ydl:
-                    ydl.extract_info(url, download=True)
-                    sub_file = None
-                    is_english = False
-                    # Buscar español primero
-                    for f in os.listdir(tmpdir):
-                        if f.startswith('sub.') and ('.es' in f or '.es-419' in f):
-                            sub_file = os.path.join(tmpdir, f)
-                            break
-                    # Si no, inglés
-                    if not sub_file:
-                        for f in os.listdir(tmpdir):
-                            if f.startswith('sub.') and ('.en' in f or '.en-US' in f):
-                                sub_file = os.path.join(tmpdir, f)
-                                is_english = True
-                                break
-                    
-                    if sub_file:
-                        with open(sub_file, 'r', encoding='utf-8') as f:
-                            content = f.read()
-                        
-                        # Limpieza de VTT
-                        content = re.sub(r'WEBVTT.*?\n\n', '', content, flags=re.DOTALL)
-                        content = re.sub(r'\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3}.*?\n', '', content)
-                        content = re.sub(r'^\d+\n', '', content, flags=re.MULTILINE)
-                        content = re.sub(r'<[^>]*>', '', content)
-                        
-                        final_text = ' '.join([line.strip() for line in content.split('\n') if line.strip()])
-                        if is_english: final_text = translate_to_spanish(final_text)
-                        
-                        cache[url] = final_text
-                        save_cache(cache)
-                        return {"transcript": final_text, "method": "subtitles"}
+    cached_transcript = read_transcript_cache(url)
+    if cached_transcript:
+        return {"transcript": cached_transcript, "method": "cache"}
 
-            raise Exception("No direct subtitles")
-
-        except Exception:
-            # 2. Descargar audio y usar Whisper
-            try:
-                audio_opts = get_robust_opts(url, {
-                    'format': 'bestaudio/best',
-                    'outtmpl': os.path.join(tmpdir, 'audio.%(ext)s'),
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '64', 
-                    }]
-                })
-                with yt_dlp.YoutubeDL(audio_opts) as ydl:
-                    ydl.download([url])
-                    audio_file = None
-                    for f in os.listdir(tmpdir):
-                        if f.startswith('audio.'):
-                            audio_file = os.path.join(tmpdir, f)
-                            break
-                    
-                    if not audio_file: raise Exception("No se pudo descargar audio")
-                    
-                    # 2.1 Intentar con Groq API (Más rápido y ligero)
-                    if groq_client:
-                        try:
-                            file_size_mb = os.path.getsize(audio_file) / (1024 * 1024)
-                            transcription = ""
-                            if AudioSegment:
-                                # Lógica de troceado si es necesario
-                                if file_size_mb >= 20:
-                                    print(f"Dividiendo audio de {file_size_mb:.1f}MB en partes de 20 min...")
-                                    audio = AudioSegment.from_file(audio_file)
-                                    chunk_length_ms = 20 * 60 * 1000 # 20 minutos por trozo
-                                    chunks = []
-                                    for i in range(0, len(audio), chunk_length_ms):
-                                        chunks.append(audio[i:i + chunk_length_ms])
-                                    
-                                    for idx, chunk in enumerate(chunks):
-                                        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as c_file:
-                                            chunk.export(c_file.name, format="mp3", bitrate="64k")
-                                            print(f"Transcribiendo parte {idx+1}/{len(chunks)}...")
-                                            with open(c_file.name, "rb") as f:
-                                                part_text = groq_client.audio.transcriptions.create(
-                                                    file=(c_file.name, f.read()),
-                                                    model="whisper-large-v3",
-                                                    response_format="text",
-                                                    language="es"
-                                                )
-                                                transcription += part_text + " "
-                                            os.remove(c_file.name)
-                                else:
-                                    with open(audio_file, "rb") as f:
-                                        transcription = groq_client.audio.transcriptions.create(
-                                            file=(audio_file, f.read()),
-                                            model="whisper-large-v3",
-                                            response_format="text",
-                                            language="es"
-                                        )
-                            else:
-                                # Fallback sin pydub (solo si file < 25MB)
-                                with open(audio_file, "rb") as f:
-                                    transcription = groq_client.audio.transcriptions.create(
-                                        file=(audio_file, f.read()),
-                                        model="whisper-large-v3",
-                                        response_format="text",
-                                        language="es"
-                                    )
-                            
-                            cache[url] = transcription.strip()
-                            save_cache(cache)
-                            return {"transcript": transcription.strip(), "method": "groq_whisper_v3"}
-                        except Exception as ge:
-                            print(f"Error en Groq: {ge}")
-                            raise Exception(f"Error en Groq API: {str(ge)}")
-
-                    raise Exception("Groq API no configurada y no se encontraron subtítulos.")
-
-            except Exception as e:
-                return JSONResponse(status_code=500, content={"error": str(e)})
+    result = await asyncio.to_thread(extract_transcript_sync, url)
+    if "error" in result:
+        return JSONResponse(status_code=500, content=result)
+    return result
 
 
 @app.post("/api/download")
@@ -546,80 +725,42 @@ async def download_video(req: VideoRequest, background_tasks: BackgroundTasks):
     format_id = req.format_id
     uid = str(uuid.uuid4())
 
+    if should_proxy_downloader():
+        remote_response, media_type, headers = await asyncio.to_thread(proxy_stream_post_sync, "/api/download", req.model_dump())
+        background_tasks.add_task(remote_response.close)
+        return StreamingResponse(remote_response.iter_content(chunk_size=65536), media_type=media_type, headers=headers)
+
     # --- INSTAGRAM: usar instaloader para descarga ---
     if 'instagram.com' in url and instaloader:
         try:
-            ig_info = await asyncio.to_thread(get_instagram_info, url)
-            if not ig_info['is_video']:
-                raise HTTPException(status_code=400, detail="Este post de Instagram no tiene video.")
-
-            video_url = ig_info['video_url']
-            headers = {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3_1 like Mac OS X) AppleWebKit/605.1.15'}
-            r = requests.get(video_url, headers=headers, stream=True, timeout=60)
-            r.raise_for_status()
-
-            file_path = os.path.join(DOWNLOAD_FOLDER, f'instagram_{uid}.mp4')
-            with open(file_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
-
-            def remove_file(path):
-                try:
-                    if os.path.exists(path): os.remove(path)
-                except: pass
-
-            background_tasks.add_task(remove_file, file_path)
-            filename = f"{ig_info['title'][:30].strip()}_{uid}.mp4"
-            return FileResponse(file_path, filename=filename, media_type='video/mp4')
+            file_path, filename, media_type = await asyncio.to_thread(download_instagram_video_sync, url, uid)
+            background_tasks.add_task(cleanup_file, file_path)
+            return FileResponse(file_path, filename=filename, media_type=media_type)
 
         except HTTPException:
             raise
         except Exception as e:
             print(f"DEBUG: Instaloader download falló, intentando con yt-dlp: {e}")
 
-    output_template = os.path.join(DOWNLOAD_FOLDER, f'%(title)s_{uid}.%(ext)s')
-    
-    if format_id and format_id not in ('best', 'bestvideo+bestaudio', None):
-        fmt = f"{format_id}/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
-    else:
-        fmt = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best'
-
-    opts = get_robust_opts(url, {
-        'format': fmt,
-        'outtmpl': output_template,
-        'merge_output_format': 'mp4',
-    })
-
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([url])
-            # Encontrar archivo
-            for f in os.listdir(DOWNLOAD_FOLDER):
-                if uid in f:
-                    file_path = os.path.join(DOWNLOAD_FOLDER, f)
-                    def remove_file(path: str):
-                        try:
-                            if os.path.exists(path):
-                                os.remove(path)
-                                print(f"DEBUG: Archivo borrado: {file_path}")
-                        except Exception as e:
-                            print(f"Error borrando archivo: {e}")
-                    
-                    background_tasks.add_task(remove_file, file_path)
-                    return FileResponse(file_path, filename=f)
-            raise Exception("Archivo no encontrado")
+        file_path, filename, media_type = await asyncio.to_thread(download_video_sync, url, format_id, uid)
+        background_tasks.add_task(cleanup_file, file_path)
+        return FileResponse(file_path, filename=filename, media_type=media_type)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/proxy-thumbnail")
 async def proxy_thumbnail(url: str):
     print(f"DEBUG: Proxy request for: {url}")
+    if not is_safe_proxy_url(url):
+        raise HTTPException(status_code=400, detail="URL de miniatura no permitida.")
+
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
         'Referer': 'https://www.instagram.com/'
     }
     try:
-        resp = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
+        resp = await asyncio.to_thread(requests.get, url, headers=headers, timeout=10, allow_redirects=True)
         resp.raise_for_status()
         print(f"DEBUG: Proxy success, Content-Type: {resp.headers.get('Content-Type')}")
         return Response(content=resp.content, media_type=resp.headers.get('Content-Type', 'image/jpeg'))
@@ -694,57 +835,11 @@ async def transcript_audio_file(
 
         print(f"DEBUG: Archivo recibido: {file.filename} ({size_mb:.2f} MB), ext: {ext}")
 
-        # Convertir a MP3 si es necesario (WhatsApp usa .ogg/opus)
-        audio_path = input_path
-        if ext in {'.ogg', '.opus', '.m4a', '.wav', '.aac', '.weba', '.webm'}:
-            converted_path = os.path.join(tmpdir, "converted.mp3")
-            import subprocess
-            result = subprocess.run(
-                ['ffmpeg', '-i', input_path, '-ar', '16000', '-ac', '1', '-b:a', '64k', converted_path],
-                capture_output=True, text=True
-            )
-            if result.returncode == 0 and os.path.exists(converted_path):
-                audio_path = converted_path
-                print(f"DEBUG: Convertido a MP3 exitosamente")
-            else:
-                print(f"DEBUG: ffmpeg error: {result.stderr}")
-                # Intentar con el archivo original si la conversión falla
-                audio_path = input_path
+        audio_path = await asyncio.to_thread(convert_audio_to_mp3_if_needed, input_path, ext, tmpdir)
 
         try:
             file_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
-            transcription = ""
-
-            if AudioSegment and file_size_mb >= 20:
-                # Archivos grandes: trocear en partes de 20 minutos
-                print(f"Dividiendo audio de {file_size_mb:.1f}MB en partes...")
-                audio = AudioSegment.from_file(audio_path)
-                chunk_length_ms = 20 * 60 * 1000
-                chunks = [audio[i:i + chunk_length_ms] for i in range(0, len(audio), chunk_length_ms)]
-
-                for idx, chunk in enumerate(chunks):
-                    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as c_file:
-                        chunk.export(c_file.name, format="mp3", bitrate="64k")
-                        print(f"Transcribiendo parte {idx+1}/{len(chunks)}...")
-                        with open(c_file.name, "rb") as cf:
-                            part_text = groq_client.audio.transcriptions.create(
-                                file=(c_file.name, cf.read()),
-                                model="whisper-large-v3",
-                                response_format="text",
-                                language=language
-                            )
-                            transcription += str(part_text) + " "
-                        os.remove(c_file.name)
-            else:
-                with open(audio_path, "rb") as f:
-                    transcription = groq_client.audio.transcriptions.create(
-                        file=(os.path.basename(audio_path), f.read()),
-                        model="whisper-large-v3",
-                        response_format="text",
-                        language=language
-                    )
-
-            transcript_text = str(transcription).strip()
+            transcript_text = await asyncio.to_thread(transcribe_audio_with_groq, audio_path, language)
             return {
                 "transcript": transcript_text,
                 "method": "groq_whisper_v3_file",
