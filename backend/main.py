@@ -196,11 +196,11 @@ def get_robust_opts(target_url, extra={}):
 
     # Estrategia específica por plataforma
     if is_youtube:
-        # Con cookies, solo "web" es compatible. Los clientes móviles no soportan cookies.
+        # Con cookies usar solo "web". Sin cookies usar "tv_embedded" que no necesita PO token.
         if 'cookiefile' in opts:
-            opts['extractor_args'] = {'youtube': {'player_client': ['web', 'mweb']}}
+            opts['extractor_args'] = {'youtube': {'player_client': ['web']}}
         else:
-            opts['extractor_args'] = {'youtube': {'player_client': ['web', 'mweb']}}
+            opts['extractor_args'] = {'youtube': {'player_client': ['tv_embedded']}}
         opts['user_agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
     elif is_tiktok:
