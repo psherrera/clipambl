@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+yt-dlp
+pydantic
+python-multipart
+requests
+groq
+deep-translator
+python-dotenv
+pydub
