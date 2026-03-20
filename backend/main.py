@@ -196,8 +196,20 @@ def get_robust_opts(target_url, extra={}):
 
     # Estrategia específica por plataforma
     if is_youtube:
-        # Con cookies usar solo "web". Sin cookies usar "tv_embedded" que no necesita PO token.
-        if 'cookiefile' in opts:
+        bgutil_script = '/opt/bgutil/server/src/generate_once.ts'
+        if os.path.exists(bgutil_script):
+            # Con bgutil PO token provider activo
+            opts['extractor_args'] = {
+                'youtube': {
+                    'player_client': ['web'],
+                    'fetch_pot': ['always'],
+                },
+                'getpot_bgutil_script': {
+                    'script_path': [bgutil_script],
+                }
+            }
+            print("DEBUG: bgutil PO token provider activado")
+        elif 'cookiefile' in opts:
             opts['extractor_args'] = {'youtube': {'player_client': ['web']}}
         else:
             opts['extractor_args'] = {'youtube': {'player_client': ['tv_embedded']}}
@@ -322,13 +334,13 @@ async def get_video_info(req: VideoRequest, request: Request):
     except Exception as e:
         last_error = str(e)
         print(f"Error en extracción primaria: {last_error}")
-        # Intento secundario con cliente alternativo si falla
+        # Intento secundario sin cookies como fallback
         try:
-            opts = get_robust_opts(url)
-            # Forzamos cliente 'tv' o 'mweb' como última opción
+            opts2 = get_robust_opts(url)
             if 'youtube.com' in url or 'youtu.be' in url:
-                opts['extractor_args'] = {'youtube': {'player_client': ['tv', 'mweb']}}
-            with yt_dlp.YoutubeDL(opts) as ydl:
+                opts2['extractor_args'] = {'youtube': {'player_client': ['tv_embedded']}}
+                opts2.pop('cookiefile', None)
+            with yt_dlp.YoutubeDL(opts2) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception as e2:
             last_error = f"{last_error} | {str(e2)}"
@@ -337,7 +349,7 @@ async def get_video_info(req: VideoRequest, request: Request):
         print(f"DEBUG: EXTRACT_INFO FAILED for {url}. Last error: {last_error}")
         raise HTTPException(
             status_code=400, 
-            detail=f"No se pudo obtener información del video. Esto puede deberse a que el video es privado, está restringido o YouTube ha bloqueado la conexión temporalmente. Error: {last_error[:100]}..."
+            detail="No pudimos procesar este video. Puede ser privado, estar restringido en tu región, o temporalmente no disponible. Intentá con otro enlace."
         )
 
     # Procesar formatos
