@@ -57,9 +57,10 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Si se provee FRONTEND_DIR por env (Docker/Render), la usamos prioritariamente
 FRONTEND_DIR = os.environ.get('FRONTEND_DIR')
 
+# Fallback local: El ROOT_DIR del proyecto Pro es el padre de backend/
+ROOT_DIR = os.path.dirname(BASE_DIR)
+
 if not FRONTEND_DIR:
-    # Fallback local: El ROOT_DIR del proyecto Pro es el padre de backend/
-    ROOT_DIR = os.path.dirname(BASE_DIR)
     FRONTEND_DIR = os.path.join(ROOT_DIR, 'frontend')
 
 DOWNLOAD_FOLDER = os.path.join(BASE_DIR, 'downloads')
