@@ -47,7 +47,7 @@ try:
 except ImportError:
     groq_client = None
 
-app = FastAPI(title="YT Downloader Pro API")
+app = FastAPI(title="Clipa Mobile API")
 
 # Configuración de CORS
 app.add_middleware(

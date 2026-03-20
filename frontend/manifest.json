@@ -1,6 +1,6 @@
 {
-  "name": "StreamVault Premium",
-  "short_name": "StreamVault",
+  "name": "Clipa Mobile",
+  "short_name": "Clipa",
   "description": "Premium Video Downloader and Transcriber",
   "start_url": "./index.html",
   "display": "standalone",

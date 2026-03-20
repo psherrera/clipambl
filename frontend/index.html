@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>StreamVault - Premium Video Downloader</title>
+    <title>Clipa Mobile</title>
     
     <!-- Fonts & Icons -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -91,21 +91,24 @@
     </div>
 
     <!-- Sticky Header -->
-    <header class="sticky top-0 z-50 glass border-b border-primary/20 px-6 py-4 flex items-center justify-between">
-        <div class="flex items-center gap-3">
-            <div class="bg-primary p-2 rounded-lg flex items-center justify-center shadow-lg shadow-primary/20">
-                <span class="material-symbols-outlined text-white">movie_filter</span>
+    <header class="sticky top-0 z-50 glass border-b border-primary/20 px-6 py-4">
+        <!-- Clipa Mobile Header -->
+        <div class="flex items-center justify-between mb-8 sm:mb-12">
+            <div class="flex items-center gap-4">
+                <div class="bg-primary p-2 rounded-lg flex items-center justify-center shadow-lg shadow-primary/20">
+                    <span class="material-symbols-outlined text-white">movie_filter</span>
+                </div>
+                <h1 class="text-xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400">Clipa Mobile</h1>
             </div>
-            <h1 class="text-xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400">StreamVault</h1>
+            <div class="flex items-center gap-4">
+                <!-- Server Status Badge -->
+                <div class="bg-slate-900 border border-white/5 py-1.5 px-3 rounded-full flex items-center gap-2">
+                    <div class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                    <span class="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Server: Online</span>
+                </div>
+            </div>
         </div>
-        <div class="flex items-center gap-4">
-            <!-- Server Status Badge -->
-            <div id="status-badge" class="flex items-center gap-2 px-3 py-1 bg-slate-800/50 border border-white/5 rounded-full transition-all">
-                <div id="status-dot" class="w-2 h-2 rounded-full bg-slate-600"></div>
-                <span id="status-text" class="text-xs font-medium text-slate-500">Offline</span>
-            </div>
-            
-            <!-- Install Button (Hidden by default) -->
+    <!-- Install Button (Hidden by default) -->
             <button id="pwa-install-btn" class="hidden bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest transition-all">
                 Instalar App
             </button>
@@ -283,60 +286,48 @@
             </div>
         </section>
 
-        <!-- Feature Grid -->
-        <section class="grid grid-cols-2 md:grid-cols-4 gap-4 pb-20">
-            <div class="glass p-5 rounded-2xl flex flex-col items-center justify-center text-center space-y-3">
-                <span class="material-symbols-outlined text-primary text-3xl">bolt</span>
-                <span class="text-white font-bold text-xs uppercase tracking-widest">Ultra Rápido</span>
-            </div>
-            <div class="glass p-5 rounded-2xl flex flex-col items-center justify-center text-center space-y-3">
-                <span class="material-symbols-outlined text-accent text-3xl">high_quality</span>
-                <span class="text-white font-bold text-xs uppercase tracking-widest">Calidad 4K</span>
-            </div>
-            <div class="glass p-5 rounded-2xl flex flex-col items-center justify-center text-center space-y-3">
-                <span class="material-symbols-outlined text-orange-400 text-3xl">translate</span>
-                <span class="text-white font-bold text-xs uppercase tracking-widest">En Español</span>
-            </div>
-            <div class="glass p-5 rounded-2xl flex flex-col items-center justify-center text-center space-y-3">
-                <span class="material-symbols-outlined text-emerald-400 text-3xl">shield</span>
-                <span class="text-white font-bold text-xs uppercase tracking-widest">Sin Anuncios</span>
-            </div>
-        </section>
 
     </main>
 
     <!-- Bottom Nav -->
-    <nav class="fixed bottom-0 left-0 right-0 z-50 glass border-t border-primary/20 px-4 py-4 sm:py-6 overflow-x-auto no-scrollbar">
-        <div class="max-w-4xl mx-auto flex items-center justify-between gap-2 min-w-max md:min-w-0">
-            <button class="nav-item active flex flex-col items-center gap-1.5 focus:outline-none" data-tab="youtube">
-                <span class="material-symbols-outlined">subscriptions</span>
+    <nav class="fixed bottom-0 left-0 right-0 z-50 glass border-t border-primary/20 px-4 py-3">
+        <div class="max-w-4xl mx-auto flex items-center justify-around">
+            <button class="nav-item active flex flex-col items-center gap-1 focus:outline-none" data-tab="youtube">
+                <span class="material-symbols-outlined text-[22px]">subscriptions</span>
                 <span class="text-[9px] font-extrabold uppercase tracking-widest">YouTube</span>
             </button>
-            <button class="nav-item flex flex-col items-center gap-1.5 focus:outline-none text-slate-500 hover:text-slate-300" data-tab="instagram">
-                <span class="material-symbols-outlined">photo_library</span>
+            <button class="nav-item flex flex-col items-center gap-1 focus:outline-none text-slate-500 hover:text-slate-300" data-tab="instagram">
+                <span class="material-symbols-outlined text-[22px]">photo_library</span>
                 <span class="text-[9px] font-extrabold uppercase tracking-widest">Instagram</span>
             </button>
-            <button class="nav-item flex flex-col items-center gap-1.5 focus:outline-none text-slate-500 hover:text-slate-300" data-tab="tiktok">
-                <span class="material-symbols-outlined">music_note</span>
+            <button class="nav-item flex flex-col items-center gap-1 focus:outline-none text-slate-500 hover:text-slate-300" data-tab="tiktok">
+                <span class="material-symbols-outlined text-[22px]">music_note</span>
                 <span class="text-[9px] font-extrabold uppercase tracking-widest">TikTok</span>
             </button>
-            <button class="nav-item flex flex-col items-center gap-1.5 focus:outline-none text-slate-500 hover:text-slate-300" data-tab="whatsapp">
-                <span class="material-symbols-outlined">mic</span>
+            <button class="nav-item flex flex-col items-center gap-1 focus:outline-none text-slate-500 hover:text-slate-300" data-tab="whatsapp">
+                <span class="material-symbols-outlined text-[22px]">mic</span>
                 <span class="text-[9px] font-extrabold uppercase tracking-widest">WhatsApp</span>
             </button>
-            <button class="nav-item flex flex-col items-center gap-1.5 focus:outline-none text-slate-500 hover:text-slate-300" data-tab="history">
-                <span class="material-symbols-outlined">history</span>
-                <span class="text-[9px] font-extrabold uppercase tracking-widest">Historial</span>
-            </button>
-            <button class="nav-item flex flex-col items-center gap-1.5 focus:outline-none text-slate-500 hover:text-slate-300 opacity-40 cursor-not-allowed">
-                <span class="material-symbols-outlined">settings</span>
-                <span class="text-[9px] font-extrabold uppercase tracking-widest">Config</span>
+            <!-- Botón Más -->
+            <button id="more-btn" class="flex flex-col items-center gap-1 focus:outline-none text-slate-500 hover:text-slate-300">
+                <span class="material-symbols-outlined text-[22px]">more_horiz</span>
+                <span class="text-[9px] font-extrabold uppercase tracking-widest">Más</span>
             </button>
         </div>
     </nav>
 
+    <!-- Menú "Más" -->
+    <div id="more-menu" class="hidden fixed bottom-16 right-4 z-50 glass border border-white/10 rounded-2xl p-2 w-44 shadow-xl">
+        <button class="nav-item w-full flex items-center gap-3 px-4 py-3 rounded-xl text-slate-300 hover:bg-white/5 text-sm font-bold" data-tab="history">
+            <span class="material-symbols-outlined text-base">history</span> Historial
+        </button>
+        <button class="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-slate-500 hover:bg-white/5 text-sm font-bold opacity-40 cursor-not-allowed">
+            <span class="material-symbols-outlined text-base">settings</span> Config
+        </button>
+    </div>
+
     <footer class="mt-auto hidden sm:block text-center py-8 text-slate-600 text-[10px] uppercase tracking-widest font-bold">
-        &copy; 2026 StreamVault Digital Media Hub
+        &copy; 2026 Clipa Mobile
     </footer>
 
     <script src="main.js?v=2.0" defer></script>

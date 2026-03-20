@@ -503,18 +503,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 <span class="bg-primary/20 text-primary p-1.5 rounded-lg flex items-center"><span class="material-symbols-outlined text-sm">newspaper</span></span>
                 <h5 class="font-bold text-white text-sm">Herramientas periodisticas</h5>
             </div>
-            <div class="grid grid-cols-2 gap-2">
-                <button data-tool="summary" data-prefix="${prefix}" class="j-tool-btn bg-white/5 hover:bg-primary/20 border border-white/5 py-3 px-3 rounded-xl text-slate-300 text-xs font-bold flex items-center gap-2 transition-all">
-                    <span class="material-symbols-outlined text-base text-primary">summarize</span> Resumen
+            <div class="grid grid-cols-2 gap-3">
+                <button data-tool="summary" data-prefix="${prefix}" class="j-tool-btn bg-white/5 hover:bg-primary/20 border border-white/5 py-4 px-4 rounded-2xl text-left transition-all group">
+                    <span class="material-symbols-outlined text-xl text-primary mb-1 block">summarize</span>
+                    <span class="text-white font-bold text-sm block">Resumen</span>
+                    <span class="text-slate-500 text-xs">Síntesis ejecutiva</span>
                 </button>
-                <button data-tool="quotes" data-prefix="${prefix}" class="j-tool-btn bg-white/5 hover:bg-accent/20 border border-white/5 py-3 px-3 rounded-xl text-slate-300 text-xs font-bold flex items-center gap-2 transition-all">
-                    <span class="material-symbols-outlined text-base text-accent">format_quote</span> Citas
+                <button data-tool="quotes" data-prefix="${prefix}" class="j-tool-btn bg-white/5 hover:bg-accent/20 border border-white/5 py-4 px-4 rounded-2xl text-left transition-all group">
+                    <span class="material-symbols-outlined text-xl text-accent mb-1 block">format_quote</span>
+                    <span class="text-white font-bold text-sm block">Citas</span>
+                    <span class="text-slate-500 text-xs">Frases destacadas</span>
                 </button>
-                <button data-tool="data" data-prefix="${prefix}" class="j-tool-btn bg-white/5 hover:bg-orange-500/20 border border-white/5 py-3 px-3 rounded-xl text-slate-300 text-xs font-bold flex items-center gap-2 transition-all">
-                    <span class="material-symbols-outlined text-base text-orange-400">data_object</span> Datos duros
+                <button data-tool="data" data-prefix="${prefix}" class="j-tool-btn bg-white/5 hover:bg-orange-500/20 border border-white/5 py-4 px-4 rounded-2xl text-left transition-all group">
+                    <span class="material-symbols-outlined text-xl text-orange-400 mb-1 block">data_object</span>
+                    <span class="text-white font-bold text-sm block">Datos duros</span>
+                    <span class="text-slate-500 text-xs">Cifras y estadísticas</span>
                 </button>
-                <button data-tool="angle" data-prefix="${prefix}" class="j-tool-btn bg-white/5 hover:bg-emerald-500/20 border border-white/5 py-3 px-3 rounded-xl text-slate-300 text-xs font-bold flex items-center gap-2 transition-all">
-                    <span class="material-symbols-outlined text-base text-emerald-400">lightbulb</span> Angulos de nota
+                <button data-tool="angle" data-prefix="${prefix}" class="j-tool-btn bg-white/5 hover:bg-emerald-500/20 border border-white/5 py-4 px-4 rounded-2xl text-left transition-all group">
+                    <span class="material-symbols-outlined text-xl text-emerald-400 mb-1 block">lightbulb</span>
+                    <span class="text-white font-bold text-sm block">Ángulos de nota</span>
+                    <span class="text-slate-500 text-xs">Ideas para tu cobertura</span>
                 </button>
             </div>
             <div id="${prefix}-ai-output" class="hidden mt-4 bg-black/30 rounded-2xl p-5 border border-white/5 fade-in"></div>
@@ -610,5 +618,18 @@ document.addEventListener('DOMContentLoaded', () => {
         toast.innerHTML = `<span class="material-symbols-outlined text-lg">${icons[type]}</span>${message}`;
         document.body.appendChild(toast);
         setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 400); }, 3500);
+    }
+
+    // Menú "Más"
+    const moreBtn = document.getElementById('more-btn');
+    const moreMenu = document.getElementById('more-menu');
+    if (moreBtn && moreMenu) {
+        moreBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            moreMenu.classList.toggle('hidden');
+        });
+        document.addEventListener('click', () => {
+            moreMenu.classList.add('hidden');
+        });
     }
 });
