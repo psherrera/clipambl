@@ -505,32 +505,24 @@ def get_robust_opts(target_url, extra=None):
     # Estrategia específica por plataforma
     if is_youtube:
         bgutil_script = '/opt/bgutil/server/src/generate_once.ts'
-        # Reducimos agresividad para evitar gatillar bloqueos por ritmo/IP.
-        opts.update({
-            'sleep_interval_requests': 1,
-            'sleep_interval': 2,
-            'max_sleep_interval': 5,
-            'retries': 2,
-            'fragment_retries': 2,
-        })
         if os.path.exists(bgutil_script):
-            # Camino principal: mweb + PO token. web_safari ayuda en algunos streams HLS.
             opts['extractor_args'] = {
                 'youtube': {
-                    'player_client': ['mweb', 'web_safari'],
+                    'player_client': ['web'],
                     'fetch_pot': ['always'],
                 },
                 'getpot_bgutil_script': {
                     'script_path': [bgutil_script],
                 }
             }
-            print("DEBUG: bgutil PO token provider activado")
+            # Con bgutil no necesitamos cookies
+            opts.pop('cookiefile', None)
+            print("DEBUG: bgutil activado con cliente web")
         elif 'cookiefile' in opts:
-            # Si hay cookies válidas, intentamos con clientes de navegador antes de caer a embedded.
-            opts['extractor_args'] = {'youtube': {'player_client': ['mweb', 'web_safari', 'web']}}
+            opts['extractor_args'] = {'youtube': {'player_client': ['web']}}
         else:
-            # Fallback sin PO token ni cookies. tv_embedded queda como último recurso.
-            opts['extractor_args'] = {'youtube': {'player_client': ['mweb', 'tv_embedded']}}
+            opts['extractor_args'] = {'youtube': {'player_client': ['tv_embedded']}}
+        # Sin sleep para no hacer timeout en Render free tier
         opts['user_agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
     elif is_tiktok:
