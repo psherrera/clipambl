@@ -139,8 +139,13 @@ def get_robust_opts(target_url, extra={}):
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0',
         'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Mobile/15E148 Safari/604.1'
     ]
-    
+
+    is_instagram = 'instagram.com' in target_url
+    is_youtube = 'youtube.com' in target_url or 'youtu.be' in target_url
+
     cookie_path = os.path.join(BASE_DIR, 'cookies.txt')
+    ig_cookie_path = os.path.join(BASE_DIR, 'cookies_ig.txt')
+
     opts = {
         'quiet': False,
         'no_warnings': False,
@@ -152,8 +157,15 @@ def get_robust_opts(target_url, extra={}):
         **extra
     }
 
-    # Soporte para cookies vía Variable de Entorno (Prioridad en Render)
-    cookie_b64 = os.environ.get('COOKIES_B64')
+    # Seleccionar cookies según plataforma
+    if is_instagram:
+        cookie_b64 = os.environ.get('INSTAGRAM_COOKIES_B64') or os.environ.get('COOKIES_B64')
+        local_paths = ['/etc/secrets/cookies_ig.txt', ig_cookie_path]
+    else:
+        cookie_b64 = os.environ.get('COOKIES_B64')
+        local_paths = ['/etc/secrets/cookies.txt', cookie_path]
+
+    # Cargar cookies desde variable de entorno
     if cookie_b64:
         try:
             cookie_data = base64.b64decode(cookie_b64).decode()
@@ -161,28 +173,28 @@ def get_robust_opts(target_url, extra={}):
             temp_cookie.write(cookie_data)
             temp_cookie.close()
             opts['cookiefile'] = temp_cookie.name
-            print(f"DEBUG: Cargando cookies desde variable [COOKIES_B64] (Temp: {temp_cookie.name})")
+            platform = 'Instagram' if is_instagram else 'YouTube'
+            print(f"DEBUG: Cargando cookies [{platform}] desde variable de entorno (Temp: {temp_cookie.name})")
         except Exception as e:
-            print(f"DEBUG: Error cargando COOKIES_B64: {e}")
-    
-    # Si no hay COOKIES_B64, intentamos con Secret File de Render o archivo local
+            print(f"DEBUG: Error cargando cookies: {e}")
+
+    # Fallback a archivo local
     if 'cookiefile' not in opts:
-        for path_candidate in ['/etc/secrets/cookies.txt', cookie_path]:
+        for path_candidate in local_paths:
             if os.path.exists(path_candidate):
                 print(f"DEBUG: Cargando cookies desde archivo {path_candidate}")
                 opts['cookiefile'] = path_candidate
                 break
-    
-    # Estrategia de clientes para YouTube (tv_embedded evita verificación de bot)
-    if 'youtube.com' in target_url or 'youtu.be' in target_url:
-        opts['extractor_args'] = {
-            'youtube': {
-                'player_client': ['tv_embedded', 'ios', 'android'],
-                'player_skip': ['webpage', 'configs']
-            }
-        }
-        opts['user_agent'] = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Mobile/15E148 Safari/604.1'
-    
+
+    # Estrategia de clientes para YouTube
+    # Con cookies, solo "web" es compatible. Los clientes móviles no soportan cookies.
+    if is_youtube:
+        if 'cookiefile' in opts:
+            opts['extractor_args'] = {'youtube': {'player_client': ['web']}}
+        else:
+            opts['extractor_args'] = {'youtube': {'player_client': ['tv_embedded', 'mweb']}}
+        opts['user_agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+
     return opts
 
 # --- ENDPOINTS ---
