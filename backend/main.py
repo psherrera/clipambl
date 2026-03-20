@@ -133,12 +133,12 @@ def get_robust_opts(target_url, extra={}):
     
     cookie_path = os.path.join(BASE_DIR, 'cookies.txt')
     opts = {
-        'quiet': True,
-        'no_warnings': True,
+        'quiet': False,
+        'no_warnings': False,
         'cachedir': False,
         'noplaylist': True,
         'nocheckcertificate': True,
-        'ignoreerrors': True,
+        'ignoreerrors': False,
         'user_agent': random.choice(USER_AGENTS),
         **extra
     }
@@ -147,7 +147,6 @@ def get_robust_opts(target_url, extra={}):
     cookie_b64 = os.environ.get('COOKIES_B64')
     if cookie_b64:
         try:
-            # Decodificamos y guardamos en un archivo temporal
             cookie_data = base64.b64decode(cookie_b64).decode()
             temp_cookie = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
             temp_cookie.write(cookie_data)
@@ -157,14 +156,22 @@ def get_robust_opts(target_url, extra={}):
         except Exception as e:
             print(f"DEBUG: Error cargando COOKIES_B64: {e}")
     
-    # Si no hay COOKIES_B64, intentamos con el archivo cookies.txt local
-    if 'cookiefile' not in opts and os.path.exists(cookie_path):
-        print(f"DEBUG: Cargando cookies locales desde {cookie_path}")
-        opts['cookiefile'] = cookie_path
+    # Si no hay COOKIES_B64, intentamos con Secret File de Render o archivo local
+    if 'cookiefile' not in opts:
+        for path_candidate in ['/etc/secrets/cookies.txt', cookie_path]:
+            if os.path.exists(path_candidate):
+                print(f"DEBUG: Cargando cookies desde archivo {path_candidate}")
+                opts['cookiefile'] = path_candidate
+                break
     
-    # Estrategia de clientes para YouTube (Priorizamos móviles para saltar bloqueos)
+    # Estrategia de clientes para YouTube (tv_embedded evita verificación de bot)
     if 'youtube.com' in target_url or 'youtu.be' in target_url:
-        opts['extractor_args'] = {'youtube': {'player_client': ['ios', 'android', 'web']}}
+        opts['extractor_args'] = {
+            'youtube': {
+                'player_client': ['tv_embedded', 'ios', 'android'],
+                'player_skip': ['webpage', 'configs']
+            }
+        }
         opts['user_agent'] = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Mobile/15E148 Safari/604.1'
     
     return opts
