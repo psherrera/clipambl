@@ -393,11 +393,13 @@ def proxy_stream_post_sync(path, payload):
 
 
 def download_instagram_video_sync(url, uid):
+    """Fallback manual download for Instagram Reels using direct URL (deprecated by yt-dlp)."""
     ig_info = get_instagram_info(url)
     if not ig_info['is_video']:
         raise HTTPException(status_code=400, detail="Este post de Instagram no tiene video.")
 
     headers = {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3_1 like Mac OS X) AppleWebKit/605.1.15'}
+    # Nota: Este método suele fallar sin la sesión correcta compartida con requests
     resp = requests.get(ig_info['video_url'], headers=headers, stream=True, timeout=60)
     resp.raise_for_status()
 
@@ -406,7 +408,7 @@ def download_instagram_video_sync(url, uid):
         for chunk in resp.iter_content(chunk_size=8192):
             fh.write(chunk)
 
-    filename = f"{ig_info['title'][:30].strip()}_{uid}.mp4"
+    filename = f"{ig_info['title'][:30].strip() or 'instagram'}_{uid}.mp4"
     return file_path, filename, 'video/mp4'
 
 
@@ -525,6 +527,16 @@ def get_robust_opts(target_url, extra=None):
         # Sin sleep para no hacer timeout en Render free tier
         opts['user_agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
+    elif is_instagram:
+        # Instagram requiere cookies y un user-agent móvil para evitar chequeos de bot
+        opts['user_agent'] = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Mobile/15E148 Safari/604.1'
+        opts['http_headers'] = {
+            'Referer': 'https://www.instagram.com/',
+            'Accept-Language': 'es-419,es;q=0.9,en;q=0.8',
+        }
+        # Evitar algunos extractores redundantes
+        opts['extractor_args'] = {'instagram': {'check_headers': True}}
+
     elif is_tiktok:
         # TikTok requiere user-agent móvil y headers específicos
         opts['user_agent'] = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Mobile/15E148 Safari/604.1'
@@ -605,16 +617,17 @@ async def get_video_info(req: VideoRequest, request: Request):
         return await asyncio.to_thread(proxy_json_post_sync, "/api/video-info", req.model_dump())
 
     is_instagram = 'instagram.com' in url
+    is_youtube = 'youtube.com' in url or 'youtu.be' in url
 
-    # --- INSTAGRAM: usar instaloader ---
-    if is_instagram and instaloader:
+    # --- INTENTO PRIMARIO: yt-dlp (más robusto con cookies) ---
+    info, last_error = await asyncio.to_thread(fetch_video_info_sync, url)
+
+    # --- FALLBACK INSTAGRAM: instaloader ---
+    if not info and is_instagram and instaloader:
+        print(f"DEBUG: yt-dlp falló para Instagram, intentando instaloader...")
         try:
             ig_info = await asyncio.to_thread(get_instagram_info, url)
-            if ig_info['is_video']:
-                formats = [{'format_id': 'best', 'ext': 'mp4', 'resolution': 'Mejor calidad', 'filesize': None, 'label': 'Mejor calidad (.mp4)'}]
-            else:
-                formats = [{'format_id': 'best', 'ext': 'jpg', 'resolution': 'Imagen original', 'filesize': None, 'label': 'Imagen original (.jpg)'}]
-
+            formats = [{'format_id': 'best', 'ext': 'mp4', 'resolution': 'Mejor calidad', 'filesize': None, 'label': 'Mejor calidad (.mp4)'}]
             thumbnail = add_proxy_thumbnail(ig_info.get('thumbnail'))
 
             return {
@@ -629,11 +642,7 @@ async def get_video_info(req: VideoRequest, request: Request):
                 'has_subtitles': False,
             }
         except Exception as e:
-            print(f"DEBUG: Instaloader falló, intentando con yt-dlp: {e}")
-
-    is_youtube = 'youtube.com' in url or 'youtu.be' in url
-
-    info, last_error = await asyncio.to_thread(fetch_video_info_sync, url)
+            print(f"DEBUG: Instaloader también falló: {e}")
 
     if not info:
         print(f"DEBUG: EXTRACT_INFO FAILED for {url}. Last error: {last_error}")
@@ -722,17 +731,8 @@ async def download_video(req: VideoRequest, background_tasks: BackgroundTasks):
         background_tasks.add_task(remote_response.close)
         return StreamingResponse(remote_response.iter_content(chunk_size=65536), media_type=media_type, headers=headers)
 
-    # --- INSTAGRAM: usar instaloader para descarga ---
-    if 'instagram.com' in url and instaloader:
-        try:
-            file_path, filename, media_type = await asyncio.to_thread(download_instagram_video_sync, url, uid)
-            background_tasks.add_task(cleanup_file, file_path)
-            return FileResponse(file_path, filename=filename, media_type=media_type)
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            print(f"DEBUG: Instaloader download falló, intentando con yt-dlp: {e}")
+    # El flujo unificado con yt-dlp es ahora el primario para todos, incluyendo Instagram.
+    # download_video_sync ya usa get_robust_opts que maneja cookies_ig.txt
 
     try:
         file_path, filename, media_type = await asyncio.to_thread(download_video_sync, url, format_id, uid)
